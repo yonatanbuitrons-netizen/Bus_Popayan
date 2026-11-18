@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BusPopayán · Compartir ubicación</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <style>
+    :root {
+      --azul: #1565c0;
+      --verde: #2e7d32;
+      --rojo: #c62828;
+      --gris: #5f6368;
+      --fondo: #f4f6f9;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--fondo);
+      color: #1f2328;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    header {
+      background: var(--azul);
+      color: #fff;
+      padding: 12px 16px;
+    }
+    header h1 { margin: 0; font-size: 18px; }
+    header p { margin: 2px 0 0; font-size: 13px; opacity: .85; }
+    .contenido {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+    }
+    aside {
+      width: 340px;
+      max-width: 100%;
+      padding: 16px;
+      overflow-y: auto;
+      background: #fff;
+      border-right: 1px solid #e3e6ea;
+    }
+    #mapa { flex: 1; min-height: 300px; }
+    label { display: block; font-size: 13px; color: var(--gris); margin: 10px 0 4px; }
+    input, select {
+      width: 100%;
+      padding: 9px 10px;
+      border: 1px solid #cfd4da;
+      border-radius: 8px;
+      font-size: 15px;
+    }
+    button {
+      width: 100%;
+      margin-top: 10px;
+      padding: 11px;
+      border: 0;
+      border-radius: 8px;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      color: #fff;
+      background: var(--azul);
+    }
+    button.verde { background: var(--verde); }
+    button.rojo { background: var(--rojo); }
+    button:disabled { opacity: .5; cursor: default; }
+    .estado {
+      margin-top: 14px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: #eef2f7;
+      font-size: 14px;
+      line-height: 1.45;
+    }
+    .punto {
+      display: inline-block;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      background: #9aa0a6;
+      margin-right: 6px;
+    }
+    .punto.on { background: #34a853; }
+    .nota { font-size: 12px; color: var(--gris); margin-top: 6px; line-height: 1.4; }
+    h2 { font-size: 14px; margin: 18px 0 0; text-transform: uppercase; letter-spacing: .04em; color: var(--gris); }
+    @media (max-width: 720px) {
+      .contenido { flex-direction: column; }
+      aside { width: 100%; border-right: 0; border-bottom: 1px solid #e3e6ea; max-height: 55vh; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>BusPopayán · Compartir ubicación en vivo</h1>
+    <p>Lo que se envíe aquí aparece en tiempo real en la app Android.</p>
+  </header>
+
+  <div class="contenido">
+    <aside>
+      <label for="nombre">Tu nombre</label>
+      <input id="nombre" value="Compañero" maxlength="40" />
+
+      <label for="ruta">Ruta (código)</label>
+      <input id="ruta" value="R001" />
+
+      <div class="estado" id="estado">
+        <div><span class="punto" id="puntoConexion"></span><span id="txtConexion">Conectando al servidor…</span></div>
+        <div id="txtModo">Sin transmitir.</div>
+        <div id="txtUltima"></div>
+      </div>
+
+      <h2>1 · GPS real</h2>
+      <button class="verde" id="btnGps">Usar mi GPS real</button>
+      <p class="nota" id="notaGps"></p>
+
+      <h2>2 · Simular recorrido</h2>
+      <p class="nota">Toca el mapa para elegir el destino (por defecto, Parque Caldas). El recorrido sigue las calles reales.</p>
+      <label for="velocidad">Velocidad simulada</label>
+      <select id="velocidad">
+        <option value="20">20 km/h (tráfico)</option>
+        <option value="30" selected>30 km/h (bus urbano)</option>
+        <option value="60">60 km/h (rápido para demo)</option>
+        <option value="150">150 km/h (muy rápido)</option>
+      </select>
+      <button id="btnSimular">Simular recorrido</button>
+
+      <h2>3 · Manual</h2>
+      <p class="nota">Con “Mover con clic” activo, cada clic en el mapa envía esa posición.</p>
+      <button id="btnManual">Mover con clic</button>
+
+      <button class="rojo" id="btnDetener" disabled>Detener transmisión</button>
+    </aside>
+
+    <div id="mapa"></div>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // ============================
+    // Estado
+    // ============================
+    const POPAYAN = [2.4419, -76.6063];          // Parque Caldas
+    const TERMINAL = [2.4545, -76.5987];         // Zona Terminal de Transportes
+    const OSRM = "https://router.project-osrm.org/route/v1/driving/";
+
+    let modo = null;           // "gps" | "sim" | "manual" | null
+    let watchId = null;
+    let timerSim = null;
+    let posicionActual = TERMINAL.slice();
+    let destino = POPAYAN.slice();
+
+    const $ = (id) => document.getElementById(id);
+
+    // ============================
+    // Mapa
+    // ============================
+    const mapa = L.map("mapa").setView(TERMINAL, 15);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: "&copy; OpenStreetMap"
+    }).addTo(mapa);
+
+    const marcadorYo = L.circleMarker(posicionActual, {
+      radius: 10, color: "#fff", weight: 3, fillColor: "#1565c0", fillOpacity: 1
+    }).addTo(mapa).bindTooltip("Tú");
+
+    const marcadorDestino = L.marker(destino).addTo(mapa).bindTooltip("Destino de la simulación");
+    const lineaRecorrido = L.polyline([], { color: "#1565c0", weight: 5, opacity: .7 }).addTo(mapa);
+    const lineaPlan = L.polyline([], { color: "#2e7d32", weight: 4, dashArray: "8 8" }).addTo(mapa);
+
+    mapa.on("click", (e) => {
+      const punto = [e.latlng.lat, e.latlng.lng];
+      if (modo === "manual") {
+        enviar(punto[0], punto[1], 5);
+      } else {
+        destino = punto;
+        marcadorDestino.setLatLng(destino);
+      }
+    });
+
+    // ============================
+    // Socket.IO
+    // ============================
+    const socket = io({ transports: ["websocket", "polling"] });
+
+    socket.on("connect", () => {
+      $("puntoConexion").classList.add("on");
+      $("txtConexion").textContent = "Conectado al servidor";
+    });
+    socket.on("disconnect", () => {
+      $("puntoConexion").classList.remove("on");
+      $("txtConexion").textContent = "Desconectado del servidor";
+    });
+    socket.on("ubicacion:error", (e) => alert(e.error || "Ubicación inválida"));
+
+    function rutaValida() {
+      const ruta = $("ruta").value.trim().toUpperCase();
+      $("ruta").value = ruta;
+      if (!/^R[0-9]{3,}$/.test(ruta)) {
+        alert("La ruta debe tener el formato R001, R002, …");
+        return null;
+      }
+      return ruta;
+    }
+
+    function enviar(lat, lng, precision) {
+      const ruta = rutaValida();
+      if (!ruta) return;
+
+      posicionActual = [lat, lng];
+      marcadorYo.setLatLng(posicionActual);
+      lineaRecorrido.addLatLng(posicionActual);
+
+      socket.emit("conductor:ubicacion", {
+        ruta_id: ruta,
+        latitud: lat,
+        longitud: lng,
+        nombre: $("nombre").value,
+        precision: precision ?? null
+      });
+
+      $("txtUltima").textContent =
+        `Enviado ${new Date().toLocaleTimeString()} · ${lat.toFixed(5)}, ${lng.toFixed(5)}`;
+    }
+
+    // ============================
+    // Control de modos
+    // ============================
+    function detener(avisarServidor = true) {
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+      if (timerSim) clearInterval(timerSim);
+      watchId = null;
+      timerSim = null;
+      modo = null;
+      lineaPlan.setLatLngs([]);
+      $("txtModo").textContent = "Sin transmitir.";
+      $("btnDetener").disabled = true;
+      $("btnManual").textContent = "Mover con clic";
+      if (avisarServidor) socket.emit("conductor:detener");
+    }
+
+    function iniciarModo(nuevo, texto) {
+      detener(false);
+      modo = nuevo;
+      lineaRecorrido.setLatLngs([]);
+      $("txtModo").textContent = texto;
+      $("btnDetener").disabled = false;
+    }
+
+    $("btnDetener").onclick = () => detener(true);
+
+    // ---- 1. GPS real ----
+    if (!window.isSecureContext) {
+      $("notaGps").innerHTML =
+        "El navegador solo da el GPS en <b>https</b> o en <b>localhost</b>. " +
+        "Desde otro equipo usa el enlace https del túnel (ver guía) o usa la simulación.";
+    }
+
+    $("btnGps").onclick = () => {
+      if (!navigator.geolocation) {
+        alert("Este navegador no tiene geolocalización.");
+        return;
+      }
+      if (!rutaValida()) return;
+      iniciarModo("gps", "Transmitiendo GPS real…");
+      watchId = navigator.geolocation.watchPosition(
+        (p) => {
+          enviar(p.coords.latitude, p.coords.longitude, p.coords.accuracy);
+          mapa.panTo(posicionActual);
+        },
+        (err) => {
+          alert("No se pudo leer el GPS: " + err.message +
+                "\nSi no estás en https/localhost, usa la simulación.");
+          detener(true);
+        },
+        { enableHighAccuracy: true, maximumAge: 2000, timeout: 20000 }
+      );
+    };
+
+    // ---- 2. Simulación por calles ----
+    async function trazarRuta(desde, hasta) {
+      const url = `${OSRM}${desde[1]},${desde[0]};${hasta[1]},${hasta[0]}?overview=full&geometries=geojson`;
+      try {
+        const r = await fetch(url);
+        const data = await r.json();
+        if (data.code === "Ok" && data.routes.length) {
+          return data.routes[0].geometry.coordinates.map(([lng, lat]) => [lat, lng]);
+        }
+      } catch (e) {
+        console.warn("OSRM no disponible, se usa línea recta", e);
+      }
+      return [desde, hasta]; // respaldo: línea recta
+    }
+
+    function distanciaM(a, b) {
+      const R = 6371000, rad = Math.PI / 180;
+      const dLat = (b[0] - a[0]) * rad, dLng = (b[1] - a[1]) * rad;
+      const h = Math.sin(dLat / 2) ** 2 +
+        Math.cos(a[0] * rad) * Math.cos(b[0] * rad) * Math.sin(dLng / 2) ** 2;
+      return 2 * R * Math.asin(Math.sqrt(h));
+    }
+
+    // Convierte la polilínea en puntos separados por "pasoM" metros
+    function densificar(puntos, pasoM) {
+      const salida = [puntos[0]];
+      for (let i = 1; i < puntos.length; i++) {
+        const a = puntos[i - 1], b = puntos[i];
+        const d = distanciaM(a, b);
+        const n = Math.max(1, Math.round(d / pasoM));
+        for (let k = 1; k <= n; k++) {
+          salida.push([a[0] + (b[0] - a[0]) * k / n, a[1] + (b[1] - a[1]) * k / n]);
+        }
+      }
+      return salida;
+    }
+
+    $("btnSimular").onclick = async () => {
+      if (!rutaValida()) return;
+      iniciarModo("sim", "Calculando recorrido…");
+
+      const camino = await trazarRuta(posicionActual, destino);
+      if (modo !== "sim") return;
+      lineaPlan.setLatLngs(camino);
+      mapa.fitBounds(lineaPlan.getBounds(), { padding: [30, 30] });
+
+      const kmh = Number($("velocidad").value);
+      const intervaloS = 2;                         // un envío cada 2 s
+      const pasoM = (kmh * 1000 / 3600) * intervaloS;
+      const puntos = densificar(camino, pasoM);
+      let i = 0;
+
+      $("txtModo").textContent = `Simulando a ${kmh} km/h…`;
+      enviar(puntos[0][0], puntos[0][1], 5);
+
+      timerSim = setInterval(() => {
+        i++;
+        if (i >= puntos.length) {
+          clearInterval(timerSim);
+          timerSim = null;
+          $("txtModo").textContent = "Llegó al destino (sigue visible en la app).";
+          return;
+        }
+        enviar(puntos[i][0], puntos[i][1], 5);
+      }, intervaloS * 1000);
+    };
+
+    // ---- 3. Manual ----
+    $("btnManual").onclick = () => {
+      if (!rutaValida()) return;
+      iniciarModo("manual", "Modo manual: haz clic en el mapa para moverte.");
+      $("btnManual").textContent = "Modo manual activo";
+      enviar(posicionActual[0], posicionActual[1], 5);
+    };
+  </script>
+</body>
+</html>

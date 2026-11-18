@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Marcador de "mi ubicación" -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="26dp"
+    android:height="26dp"
+    android:viewportWidth="26"
+    android:viewportHeight="26">
+    <path
+        android:fillColor="#332E7D32"
+        android:pathData="M13,0a13,13 0,1 1,0 26a13,13 0,1 1,0 -26z" />
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M13,5a8,8 0,1 1,0 16a8,8 0,1 1,0 -16z" />
+    <path
+        android:fillColor="#2E7D32"
+        android:pathData="M13,7.5a5.5,5.5 0,1 1,0 11a5.5,5.5 0,1 1,0 -11z" />
+</vector>
